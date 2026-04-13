@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
 NovaTerm - A MobaXterm replacement for Linux
+Author: Joseph Martin
+License: MIT
 Built with GTK3 + VTE for native terminal emulation + Paramiko for SSH
+https://github.com/majorpaynedof/Novaterm
 """
 
 import gi
@@ -977,6 +980,11 @@ class TerminalTab(Gtk.Box):
         self.term.set_color_cursor(CURSOR_COLOR)
         self.term.set_allow_hyperlink(True)
         self.term.connect("child-exited", self._on_exit)
+        self.term.connect("button-press-event", self._on_term_button_press)
+
+        self.term.connect("key-press-event", self._on_term_key_press)
+
+
 
         term_scroll = Gtk.ScrolledWindow()
         term_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -1000,6 +1008,97 @@ class TerminalTab(Gtk.Box):
                 GLib.idle_add(self._connect_ssh)
         else:
             self._spawn_local()
+
+    def _on_term_button_press(self, widget, event):
+        if event.button == 3:
+            self._show_term_context_menu(event)
+            return True  # stop VTE handling it
+        return False
+
+    def _show_term_context_menu(self, event):
+        menu = Gtk.Menu()
+        # Force menu text to be visible — override any dark theme that hides it
+        provider = Gtk.CssProvider()
+        provider.load_from_data(b"menu, menuitem, menuitem label { color: #e6edf3; background-color: #21262d; } menuitem:hover { background-color: #30363d; }")
+        menu.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self._build_term_menu(menu)
+        menu.show_all()
+        menu.popup_at_pointer(event)
+
+    def _build_term_menu(self, menu):
+        has_sel = self.term.get_has_selection()
+
+        copy_item = Gtk.MenuItem(label="Copy")
+        copy_item.connect("activate", lambda w: self.term.copy_clipboard())
+        copy_item.set_sensitive(has_sel)
+        menu.append(copy_item)
+
+        paste_item = Gtk.MenuItem(label="Paste")
+        paste_item.connect("activate", lambda w: self.term.paste_clipboard())
+        menu.append(paste_item)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
+        select_item = Gtk.MenuItem(label="Select All")
+        select_item.connect("activate", lambda w: self.term.select_all())
+        menu.append(select_item)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
+        try:
+            copyhtml_item = Gtk.MenuItem(label="Copy as HTML")
+            copyhtml_item.connect("activate", lambda w: self.term.copy_clipboard_format(Vte.Format.HTML))
+            copyhtml_item.set_sensitive(has_sel)
+            menu.append(copyhtml_item)
+            menu.append(Gtk.SeparatorMenuItem())
+        except Exception:
+            pass
+
+        bigger_item = Gtk.MenuItem(label="Increase Font Size  (Ctrl+Shift++)")
+        bigger_item.connect("activate", lambda w: self._change_font_size(1))
+        menu.append(bigger_item)
+
+        smaller_item = Gtk.MenuItem(label="Decrease Font Size  (Ctrl+Shift+-)")
+        smaller_item.connect("activate", lambda w: self._change_font_size(-1))
+        menu.append(smaller_item)
+
+        reset_item = Gtk.MenuItem(label="Reset Font Size")
+        reset_item.connect("activate", lambda w: self.term.set_font(
+            Pango.FontDescription("JetBrains Mono 13")))
+        menu.append(reset_item)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
+        clear_item = Gtk.MenuItem(label="Clear Scrollback")
+        clear_item.connect("activate", lambda w: self.term.reset(True, True))
+        menu.append(clear_item)
+
+    def _on_term_key_press(self, term, event):
+        # Ctrl+Shift+C = Copy, Ctrl+Shift+V = Paste
+        modifiers = event.state & Gtk.accelerator_get_default_mod_mask()
+        ctrl_shift = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK
+        if modifiers == ctrl_shift:
+            key = Gdk.keyval_name(event.keyval).upper()
+            if key == "C":
+                self.term.copy_clipboard()
+                return True
+            elif key == "V":
+                self.term.paste_clipboard()
+                return True
+            elif key == "PLUS" or key == "EQUAL":
+                self._change_font_size(1)
+                return True
+            elif key == "MINUS" or key == "UNDERSCORE":
+                self._change_font_size(-1)
+                return True
+        return False
+
+    def _change_font_size(self, delta):
+        desc = self.term.get_font()
+        current = desc.get_size() // Pango.SCALE
+        new_size = max(6, min(32, current + delta))
+        desc.set_size(new_size * Pango.SCALE)
+        self.term.set_font(desc)
 
     def _spawn_local(self):
         shell = os.environ.get("SHELL", "/bin/bash")
@@ -1173,6 +1272,26 @@ class MainWindow(Gtk.Window):
         self._build_ui()
         self._apply_css()
         self._populate_session_tree()
+        self._set_window_icon()
+
+    def _set_window_icon(self):
+        """Set the window icon from embedded base64 dog photo."""
+        if not HAS_GDKPIXBUF:
+            return
+        try:
+            import base64
+            png_data = base64.b64decode(DOG_ICON_B64)
+            loader = GdkPixbuf.PixbufLoader.new_with_type("png")
+            loader.write(png_data)
+            loader.close()
+            pixbuf = loader.get_pixbuf()
+            # Set as window icon at multiple sizes
+            icon_list = []
+            for size in [16, 32, 48, 64, 128]:
+                icon_list.append(pixbuf.scale_simple(size, size, GdkPixbuf.InterpType.BILINEAR))
+            self.set_icon_list(icon_list)
+        except Exception as e:
+            pass  # Fall back to system icon
 
     def _apply_css(self):
         provider = Gtk.CssProvider()
