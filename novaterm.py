@@ -279,7 +279,25 @@ class SessionDialog(Gtk.Dialog):
         self.key_btn = Gtk.Button(label="…")
         self.key_btn.connect("clicked", self._browse_key)
         ssh_grid.attach(self.key_btn, 2, 1, 1, 1)
+        # ── X11 Forwarding + compression checkboxes ───────────────
+        options_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=20)
+        options_box.set_margin_top(6)
+
+        self.x11_check = Gtk.CheckButton(label="Enable X11 Forwarding  (-X)")
+        self.x11_check.set_tooltip_text(
+            "Forward graphical apps from the remote server to your local display. "
+            "Lets you run GUI apps like gedit, firefox, gimp remotely."
+        )
+        options_box.pack_start(self.x11_check, False, False, 0)
+
+        self.compress_check = Gtk.CheckButton(label="Compression  (-C)")
+        self.compress_check.set_tooltip_text(
+            "Enable SSH compression — useful on slow connections."
+        )
+        options_box.pack_start(self.compress_check, False, False, 0)
+
         self.ssh_frame.pack_start(ssh_grid, False, False, 0)
+        self.ssh_frame.pack_start(options_box, False, False, 0)
 
         # ── RDP-specific ───────────────────────────────────────────
         self.rdp_frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -344,6 +362,8 @@ class SessionDialog(Gtk.Dialog):
                 self.key_entry.set_text(session.get("key", ""))
                 if session.get("auth") == "password":
                     self.auth_combo.set_active(1)
+                self.x11_check.set_active(session.get("x11", False))
+                self.compress_check.set_active(session.get("compress", False))
 
         self.show_all()
         self.rdp_frame.hide()  # hide after show_all
@@ -401,7 +421,12 @@ class SessionDialog(Gtk.Dialog):
             })
         else:
             auth = "key" if self.auth_combo.get_active() == 0 else "password"
-            base.update({"auth": auth, "key": self.key_entry.get_text().strip()})
+            base.update({
+                "auth": auth,
+                "key": self.key_entry.get_text().strip(),
+                "x11": self.x11_check.get_active(),
+                "compress": self.compress_check.get_active(),
+            })
         return base
 
 
@@ -1224,7 +1249,11 @@ class TerminalTab(Gtk.Box):
         if self.on_connected:
             self.on_connected(self.session)
         if self.on_status:
-            self.on_status(f"Connected to {self.session['host']}")
+            extras = []
+            if self.session.get("x11"):    extras.append("X11")
+            if self.session.get("compress"): extras.append("C")
+            suffix = "  [" + " ".join(extras) + "]" if extras else ""
+            self.on_status(f"Connected to {self.session['host']}{suffix}")
 
     def _spawn_ssh_in_term(self):
         s = self.session
@@ -1232,6 +1261,15 @@ class TerminalTab(Gtk.Box):
         cmd += ["-p", str(s.get("port", 22))]
         if s.get("auth") == "key" and s.get("key"):
             cmd += ["-i", os.path.expanduser(s["key"])]
+        # X11 forwarding
+        if s.get("x11", False):
+            cmd += ["-X"]
+            # Also set DISPLAY env hint
+        # Compression
+        if s.get("compress", False):
+            cmd += ["-C"]
+        # Keep alive
+        cmd += ["-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3"]
         cmd.append(f"{s['user']}@{s['host']}")
 
         self.term.spawn_async(
