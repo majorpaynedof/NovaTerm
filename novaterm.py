@@ -42,7 +42,7 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".config" / "novaterm"
 CONFIG_FILE = CONFIG_DIR / "sessions.json"
 
-__version__ = "1.3.1"
+__version__ = "1.3.3"
 __author__ = "Joseph Martin"
 __github__ = "https://github.com/majorpaynedof/Novaterm"
 
@@ -222,6 +222,8 @@ def save_sessions(data):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_FILE, "w") as f:
         json.dump(data, f, indent=2)
+    # Restrict permissions — file may contain passwords
+    os.chmod(CONFIG_FILE, 0o600)
 
 
 class SessionDialog(Gtk.Dialog):
@@ -1106,6 +1108,11 @@ class FileBrowser(Gtk.Box):
         self.path_entry.set_text("(disconnected)")
 
     def navigate(self, path, push_history=True):
+        # Normalise path to prevent traversal tricks
+        path = str(Path(path).resolve()) if not self.sftp else path
+        # Guard: never allow empty path
+        if not path:
+            path = "/"
         if push_history and self.current_path and self.current_path != path:
             self.history.append(self.current_path)
             self.forward_stack.clear()
@@ -1530,65 +1537,108 @@ class FileBrowser(Gtk.Box):
 class InteractiveHostKeyPolicy(paramiko.MissingHostKeyPolicy):
     """
     Secure host key policy:
-    - Accepts keys already in ~/.ssh/known_hosts
-    - Prompts the user to verify and accept new host keys
-    - Rejects changed keys (MITM protection) with a clear warning
+    - Accepts keys already in ~/.ssh/known_hosts (checked via HostKeys object)
+    - Prompts user to verify and accept new host keys (dialog on GTK main thread)
+    - Warns loudly if a known key changes (MITM protection)
+    - Saves accepted keys to ~/.ssh/known_hosts immediately
     """
+
+    KNOWN_HOSTS = os.path.expanduser("~/.ssh/known_hosts")
+
     def __init__(self, parent_window=None):
         self.parent_window = parent_window
 
-    def missing_host_key(self, client, hostname, key):
-        key_type = key.get_name()
-        fingerprint = key.get_fingerprint().hex(":")
-        host_keys = paramiko.util.load_host_keys(
-            os.path.expanduser("~/.ssh/known_hosts")
-        ) if os.path.exists(os.path.expanduser("~/.ssh/known_hosts")) else {}
+    def _load_known_hosts(self):
+        """Return a paramiko.HostKeys object loaded from disk."""
+        hk = paramiko.HostKeys()
+        if os.path.exists(self.KNOWN_HOSTS):
+            try:
+                hk.load(self.KNOWN_HOSTS)
+            except Exception as e:
+                print(f"Warning: could not load known_hosts: {e}")
+        return hk
 
-        # Check if host already known with a different key (MITM warning)
-        if hostname in host_keys:
-            if key_type in host_keys[hostname]:
-                known_fp = host_keys[hostname][key_type].get_fingerprint().hex(":")
+    def _save_host_key(self, hostname, key):
+        """Append the key to ~/.ssh/known_hosts using HostKeys.add() + save()."""
+        try:
+            # Ensure ~/.ssh exists with correct permissions
+            ssh_dir = os.path.dirname(self.KNOWN_HOSTS)
+            os.makedirs(ssh_dir, mode=0o700, exist_ok=True)
+
+            hk = self._load_known_hosts()
+            hk.add(hostname, key.get_name(), key)
+            hk.save(self.KNOWN_HOSTS)
+
+            # Ensure known_hosts has correct permissions
+            os.chmod(self.KNOWN_HOSTS, 0o600)
+            print(f"Saved host key for {hostname} to {self.KNOWN_HOSTS}")
+        except Exception as e:
+            print(f"Warning: could not save host key for {hostname}: {e}")
+
+    def _show_dialog_on_main_thread(self, build_fn):
+        """
+        Run a GTK dialog from a background thread safely.
+        build_fn receives no args and must return (dialog, accept_response).
+        Returns the response ID, blocking until the user responds.
+        """
+        import threading as _threading
+        result = [None]
+        done  = _threading.Event()
+
+        def run_dialog():
+            dlg, accept = build_fn()
+            result[0] = dlg.run()
+            dlg.destroy()
+            done.set()
+
+        GLib.idle_add(run_dialog)
+        done.wait(timeout=120)  # wait up to 2 minutes for user response
+        return result[0]
+
+    def missing_host_key(self, client, hostname, key):
+        import time
+        key_type    = key.get_name()
+        fingerprint = ":".join(
+            f"{b:02x}" for b in key.get_fingerprint()
+        )
+
+        hk = self._load_known_hosts()
+
+        # ── Check for changed key (MITM warning) ─────────────────────────
+        if hostname in hk:
+            existing = hk[hostname]
+            if key_type in existing:
+                known = existing[key_type]
+                known_fp = ":".join(f"{b:02x}" for b in known.get_fingerprint())
                 if known_fp != fingerprint:
-                    # Key mismatch — this is serious
-                    result = [False]
-                    def show_warning():
+                    def build_warn():
                         dlg = Gtk.MessageDialog(
                             transient_for=self.parent_window,
                             message_type=Gtk.MessageType.WARNING,
                             buttons=Gtk.ButtonsType.YES_NO,
                         )
                         dlg.set_markup(
-                            "<b>WARNING: Host key has changed!</b>\n\n"
-                            "This could indicate a man-in-the-middle attack.\n\n"
+                            "<b>⚠ WARNING: Host key has changed!</b>\n\n"
+                            "This could mean a man-in-the-middle attack.\n\n"
                             f"Host: <tt>{hostname}</tt>\n"
-                            f"Key type: <tt>{key_type}</tt>\n"
-                            f"New fingerprint: <tt>{fingerprint}</tt>\n\n"
-                            "Only continue if you know why the key changed "
+                            f"Key: <tt>{key_type}</tt>\n"
+                            f"New fingerprint:\n<tt>{fingerprint}</tt>\n\n"
+                            "Only continue if you know why the key changed\n"
                             "(e.g. server was rebuilt). Connect anyway?"
                         )
-                        if dlg.run() == Gtk.ResponseType.YES:
-                            result[0] = True
-                        dlg.destroy()
-                    GLib.idle_add(show_warning)
-                    # Block until user responds (run a nested mainloop)
-                    import time
-                    deadline = time.time() + 30
-                    while time.time() < deadline:
-                        if result[0] is not False:
-                            break
-                        time.sleep(0.1)
-                    if not result[0]:
-                        raise paramiko.SSHException(
-                            f"Host key verification failed for {hostname}. "
-                            "Connection aborted for security."
-                        )
-                    # User accepted — update known_hosts
-                    self._save_host_key(hostname, key)
-                    return
+                        return dlg, Gtk.ResponseType.YES
+                    resp = self._show_dialog_on_main_thread(build_warn)
+                    if resp == Gtk.ResponseType.YES:
+                        self._save_host_key(hostname, key)
+                        return
+                    raise paramiko.SSHException(
+                        f"Host key mismatch for {hostname} — connection aborted."
+                    )
+                # Key matches — accept silently
+                return
 
-        # New host — prompt user to verify fingerprint
-        result = [None]
-        def show_prompt():
+        # ── New host — prompt user ────────────────────────────────────────
+        def build_prompt():
             dlg = Gtk.MessageDialog(
                 transient_for=self.parent_window,
                 message_type=Gtk.MessageType.QUESTION,
@@ -1598,41 +1648,31 @@ class InteractiveHostKeyPolicy(paramiko.MissingHostKeyPolicy):
                 "<b>Unknown host key</b>\n\n"
                 f"Host: <tt>{hostname}</tt>\n"
                 f"Key type: <tt>{key_type}</tt>\n"
-                f"Fingerprint: <tt>{fingerprint}</tt>\n\n"
-                "Verify this fingerprint with the server administrator "
-                "before accepting. Add to known_hosts and connect?"
+                f"Fingerprint:\n<tt>{fingerprint}</tt>\n\n"
+                "Verify this fingerprint with the server owner\n"
+                "before accepting."
             )
             dlg.add_buttons(
-                "Reject", Gtk.ResponseType.REJECT,
-                "Accept Once", Gtk.ResponseType.ACCEPT,
-                "Accept & Save", Gtk.ResponseType.OK,
+                "Reject",       Gtk.ResponseType.REJECT,
+                "Accept Once",  Gtk.ResponseType.ACCEPT,
+                "Accept & Save",Gtk.ResponseType.OK,
             )
-            resp = dlg.run()
-            dlg.destroy()
-            result[0] = resp
-        GLib.idle_add(show_prompt)
-        import time
-        deadline = time.time() + 60
-        while time.time() < deadline:
-            if result[0] is not None:
-                break
-            time.sleep(0.1)
-        if result[0] == Gtk.ResponseType.REJECT or result[0] is None:
+            dlg.set_default_response(Gtk.ResponseType.OK)
+            return dlg, Gtk.ResponseType.OK
+
+        resp = self._show_dialog_on_main_thread(build_prompt)
+
+        if resp == Gtk.ResponseType.OK:
+            # Save permanently to known_hosts
+            self._save_host_key(hostname, key)
+        elif resp == Gtk.ResponseType.ACCEPT:
+            # Accept this session only — don't save
+            pass
+        else:
+            # Reject or timed out
             raise paramiko.SSHException(
                 f"Host key rejected for {hostname}."
             )
-        if result[0] == Gtk.ResponseType.OK:
-            self._save_host_key(hostname, key)
-
-    def _save_host_key(self, hostname, key):
-        known_hosts = os.path.expanduser("~/.ssh/known_hosts")
-        try:
-            host_keys = paramiko.util.load_host_keys(known_hosts) \
-                if os.path.exists(known_hosts) else paramiko.HostKeys()
-            host_keys.add(hostname, key.get_name(), key)
-            host_keys.save(known_hosts)
-        except Exception as e:
-            print(f"Warning: could not save host key: {e}")
 
 
 class TerminalTab(Gtk.Box):
@@ -1819,7 +1859,9 @@ class TerminalTab(Gtk.Box):
         if "xfreerdp" in rdp_bin:
             cmd += [f"/v:{host}:{port}"]
             if user:     cmd += [f"/u:{user}"]
-            if password: cmd += [f"/p:{password}"]
+            # Use /from-stdin to avoid password in process list (visible via ps aux)
+            if password:
+                cmd += ["/from-stdin"]
             if domain:   cmd += [f"/d:{domain}"]
             if res == "Fullscreen":
                 cmd += ["/f"]
@@ -1846,6 +1888,11 @@ class TerminalTab(Gtk.Box):
             Vte.PtyFlags.DEFAULT, str(Path.home()), cmd, None,
             GLib.SpawnFlags.SEARCH_PATH, None, None, -1, None, self._rdp_spawn_callback
         )
+        # Feed password via stdin if using /from-stdin
+        if password and "xfreerdp" in rdp_bin and "/from-stdin" in cmd:
+            GLib.timeout_add(800, lambda: (
+                self.term.feed_child((password + "\n").encode()), False
+            )[1])
         if self.on_status:
             self.on_status(f"RDP → {host}")
         # File browser shows local for RDP (no SFTP)
@@ -2541,6 +2588,7 @@ class MacroPanel(Gtk.Box):
         self.MACROS_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(self.MACROS_FILE, "w") as f:
             json.dump(macros, f, indent=2)
+        os.chmod(self.MACROS_FILE, 0o600)
 
     def _build_ui(self):
         # ── Header ───────────────────────────────────────────────
@@ -3451,8 +3499,13 @@ class MainWindow(Gtk.Window):
         dlg = Gtk.AboutDialog()
         dlg.set_transient_for(self)
         dlg.set_program_name("NovaTerm")
-        dlg.set_version("1.3.1")
-        dlg.set_comments("A MobaXterm replacement for Linux.\nBuilt with GTK3 + VTE + Paramiko.")
+        dlg.set_version("1.3.3")
+        dlg.set_comments(
+            "A MobaXterm replacement for Linux.\n"
+            "Built with GTK3 + VTE + Paramiko.\n\n"
+            "Sessions stored in ~/.config/novaterm/sessions.json (mode 600)\n"
+            "Host keys stored in ~/.ssh/known_hosts"
+        )
         dlg.set_license_type(Gtk.License.MIT_X11)
         dlg.set_website("https://github.com/yourusername/novaterm")
         dlg.run()
@@ -3576,7 +3629,7 @@ class SplashScreen(Gtk.Window):
 
         # Version
         ver = Gtk.Label()
-        ver.set_markup('<span font="9" color="#6e7681">v1.3.1  •  Built with GTK3 + VTE + Paramiko</span>')
+        ver.set_markup('<span font="9" color="#6e7681">v1.3.3  •  Built with GTK3 + VTE + Paramiko</span>')
         ver.set_margin_top(8)
         box.pack_start(ver, False, False, 0)
 
