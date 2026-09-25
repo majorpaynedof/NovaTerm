@@ -42,7 +42,7 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".config" / "novaterm"
 CONFIG_FILE = CONFIG_DIR / "sessions.json"
 
-__version__ = "1.2.0"
+__version__ = "1.3.1"
 __author__ = "Joseph Martin"
 __github__ = "https://github.com/majorpaynedof/Novaterm"
 
@@ -348,12 +348,41 @@ class SessionDialog(Gtk.Dialog):
         self.rdp_frame.set_no_show_all(True)
         self.rdp_frame.hide()
 
-        # ── Group ─────────────────────────────────────────────────
+        # ── Group + Colour ────────────────────────────────────────
         group_grid = Gtk.Grid(column_spacing=12, row_spacing=8)
         group_grid.set_margin_top(4)
         group_grid.attach(lbl("Group"), 0, 0, 1, 1)
         self.group_entry = Gtk.Entry(text="My Servers")
         group_grid.attach(self.group_entry, 1, 0, 2, 1)
+
+        group_grid.attach(lbl("Colour"), 0, 1, 1, 1)
+        colour_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._colour_btns = {}
+        COLOURS = [
+            ("none",   "#30363d", "⬤  None"),
+            ("blue",   "#58a6ff", "⬤  Blue"),
+            ("green",  "#3fb950", "⬤  Green"),
+            ("orange", "#f0883e", "⬤  Orange"),
+            ("red",    "#f85149", "⬤  Red"),
+            ("purple", "#bc8cff", "⬤  Purple"),
+            ("yellow", "#d29922", "⬤  Yellow"),
+            ("cyan",   "#39c5cf", "⬤  Cyan"),
+        ]
+        first_btn = None
+        for cid, hex_col, clabel in COLOURS:
+            btn = Gtk.RadioButton.new_with_label_from_widget(first_btn, "")
+            if first_btn is None:
+                first_btn = btn
+            # Show just a coloured dot
+            btn.set_label("")
+            dot = Gtk.Label()
+            dot.set_markup(f'<span color="{hex_col}" size="large">&#x2B24;</span>')
+            btn.get_child().destroy() if btn.get_child() else None
+            btn.add(dot)
+            btn.set_tooltip_text(clabel.split()[1])
+            colour_box.pack_start(btn, False, False, 0)
+            self._colour_btns[cid] = btn
+        group_grid.attach(colour_box, 1, 1, 2, 1)
 
         outer.pack_start(grid, False, False, 0)
         outer.pack_start(self.ssh_frame, False, False, 0)
@@ -380,6 +409,10 @@ class SessionDialog(Gtk.Dialog):
                     self.auth_combo.set_active(1)
                 self.x11_check.set_active(session.get("x11", False))
                 self.compress_check.set_active(session.get("compress", False))
+            # Restore colour
+            saved_colour = session.get("colour", "none")
+            if saved_colour in self._colour_btns:
+                self._colour_btns[saved_colour].set_active(True)
 
         self.show_all()
         self.rdp_frame.hide()  # hide after show_all
@@ -443,6 +476,11 @@ class SessionDialog(Gtk.Dialog):
                 "x11": self.x11_check.get_active(),
                 "compress": self.compress_check.get_active(),
             })
+        # Save selected colour
+        for cid, btn in self._colour_btns.items():
+            if btn.get_active():
+                base["colour"] = cid
+                break
         return base
 
 
@@ -2456,10 +2494,259 @@ class PortForwardPanel(Gtk.Box):
                 self.status_label.set_text("No active tunnels")
 
 
+class MacroPanel(Gtk.Box):
+    """
+    Macro / snippet panel — save one-click commands that run in
+    the active terminal tab. Macros are persisted to
+    ~/.config/novaterm/macros.json
+    """
+
+    MACROS_FILE = Path.home() / ".config" / "novaterm" / "macros.json"
+
+    DEFAULT_MACROS = [
+        {"name": "Disk Usage",       "cmd": "df -h",                    "group": "System"},
+        {"name": "Memory Usage",     "cmd": "free -h",                  "group": "System"},
+        {"name": "CPU Info",         "cmd": "top -bn1 | head -20",      "group": "System"},
+        {"name": "Who is logged in", "cmd": "w",                        "group": "System"},
+        {"name": "List processes",   "cmd": "ps aux --sort=-%cpu | head -20", "group": "System"},
+        {"name": "Network ports",    "cmd": "ss -tlnp",                 "group": "Network"},
+        {"name": "IP addresses",     "cmd": "ip addr show",             "group": "Network"},
+        {"name": "Docker containers","cmd": "docker ps -a",             "group": "Docker"},
+        {"name": "Docker images",    "cmd": "docker images",            "group": "Docker"},
+        {"name": "Journal errors",   "cmd": "journalctl -p err -n 50",  "group": "Logs"},
+        {"name": "Nginx status",     "cmd": "systemctl status nginx",   "group": "Services"},
+        {"name": "Update packages",  "cmd": "sudo apt update && sudo apt upgrade -y", "group": "System"},
+    ]
+
+    def __init__(self, parent_window):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        self.parent_window = parent_window
+        self.macros = self._load_macros()
+        self._build_ui()
+
+    def _load_macros(self):
+        if self.MACROS_FILE.exists():
+            try:
+                with open(self.MACROS_FILE) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        # First run — save and return defaults
+        self._save_macros(self.DEFAULT_MACROS)
+        return list(self.DEFAULT_MACROS)
+
+    def _save_macros(self, macros=None):
+        if macros is None:
+            macros = self.macros
+        self.MACROS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.MACROS_FILE, "w") as f:
+            json.dump(macros, f, indent=2)
+
+    def _build_ui(self):
+        # ── Header ───────────────────────────────────────────────
+        hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        hdr.set_margin_start(8); hdr.set_margin_end(8)
+        hdr.set_margin_top(6); hdr.set_margin_bottom(6)
+        lbl = Gtk.Label(label="MACROS", xalign=0)
+        lbl.get_style_context().add_class("sidebar-header")
+        hdr.pack_start(lbl, True, True, 0)
+
+        add_btn = Gtk.Button(label="+")
+        add_btn.set_tooltip_text("Add new macro")
+        add_btn.set_relief(Gtk.ReliefStyle.NONE)
+        add_btn.connect("clicked", self._add_macro)
+        hdr.pack_end(add_btn, False, False, 0)
+        self.pack_start(hdr, False, False, 0)
+        self.pack_start(Gtk.Separator(), False, False, 0)
+
+        # ── Search ───────────────────────────────────────────────
+        search_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        search_box.set_margin_start(6); search_box.set_margin_end(6)
+        search_box.set_margin_top(4); search_box.set_margin_bottom(4)
+        self.search = Gtk.SearchEntry()
+        self.search.set_placeholder_text("Filter macros...")
+        self.search.connect("search-changed", lambda e: self._refresh_list())
+        search_box.pack_start(self.search, True, True, 0)
+        self.pack_start(search_box, False, False, 0)
+        self.pack_start(Gtk.Separator(), False, False, 0)
+
+        # ── Macro list ───────────────────────────────────────────
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.list_box = Gtk.ListBox()
+        self.list_box.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.list_box.set_activate_on_single_click(True)
+        scroll.add(self.list_box)
+        self.pack_start(scroll, True, True, 0)
+
+        self._refresh_list()
+
+    def _refresh_list(self):
+        for child in self.list_box.get_children():
+            self.list_box.remove(child)
+
+        query = self.search.get_text().lower().strip()
+        groups = {}
+        for macro in self.macros:
+            g = macro.get("group", "General")
+            if query and query not in macro["name"].lower() and query not in macro["cmd"].lower():
+                continue
+            groups.setdefault(g, []).append(macro)
+
+        for group_name, macros in sorted(groups.items()):
+            # Group header
+            grp_row = Gtk.ListBoxRow()
+            grp_row.set_selectable(False)
+            grp_box = Gtk.Box()
+            grp_box.set_margin_start(8); grp_box.set_margin_top(6)
+            grp_lbl = Gtk.Label(label=group_name.upper(), xalign=0)
+            grp_lbl.get_style_context().add_class("dim-label")
+            css = Gtk.CssProvider()
+            css.load_from_data(b"label { font-size: 10px; letter-spacing: 1px; }")
+            grp_lbl.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            grp_box.pack_start(grp_lbl, True, True, 0)
+            grp_row.add(grp_box)
+            self.list_box.add(grp_row)
+
+            for macro in macros:
+                row = self._make_macro_row(macro)
+                self.list_box.add(row)
+
+        self.list_box.show_all()
+
+    def _make_macro_row(self, macro):
+        row = Gtk.ListBoxRow()
+        row.set_tooltip_text(macro["cmd"])
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        box.set_margin_start(10); box.set_margin_end(6)
+        box.set_margin_top(5); box.set_margin_bottom(5)
+
+        # Run button (clicking the name runs it)
+        run_btn = Gtk.Button()
+        run_btn.set_relief(Gtk.ReliefStyle.NONE)
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        name_lbl = Gtk.Label(label=macro["name"], xalign=0)
+        cmd_lbl = Gtk.Label(label=macro["cmd"][:50] + ("…" if len(macro["cmd"]) > 50 else ""), xalign=0)
+        cmd_lbl.get_style_context().add_class("dim-label")
+        css = Gtk.CssProvider()
+        css.load_from_data(b"label { font-size: 11px; }")
+        cmd_lbl.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        btn_box.pack_start(name_lbl, False, False, 0)
+        btn_box.pack_start(cmd_lbl, False, False, 0)
+        run_btn.add(btn_box)
+        run_btn.connect("clicked", lambda b, m=macro: self._run_macro(m))
+        box.pack_start(run_btn, True, True, 0)
+
+        # Edit button
+        edit_btn = Gtk.Button(label="✏")
+        edit_btn.set_tooltip_text("Edit macro")
+        edit_btn.set_relief(Gtk.ReliefStyle.NONE)
+        edit_btn.connect("clicked", lambda b, m=macro: self._edit_macro(m))
+        box.pack_end(edit_btn, False, False, 0)
+
+        # Delete button
+        del_btn = Gtk.Button(label="✕")
+        del_btn.set_tooltip_text("Delete macro")
+        del_btn.set_relief(Gtk.ReliefStyle.NONE)
+        del_btn.connect("clicked", lambda b, m=macro: self._delete_macro(m))
+        box.pack_end(del_btn, False, False, 0)
+
+        row.add(box)
+        return row
+
+    def _run_macro(self, macro):
+        """Send macro command to the active terminal tab."""
+        nb = self.parent_window.notebook
+        page = nb.get_current_page()
+        if page < 0:
+            return
+        widget = nb.get_nth_page(page)
+        if isinstance(widget, TerminalTab):
+            cmd = macro["cmd"] + "\n"
+            widget.term.feed_child(cmd.encode())
+            widget.term.grab_focus()
+        else:
+            d = Gtk.MessageDialog(
+                transient_for=self.parent_window,
+                message_type=Gtk.MessageType.INFO,
+                buttons=Gtk.ButtonsType.OK,
+                text="No active terminal tab.\nOpen a terminal tab first."
+            )
+            d.run(); d.destroy()
+
+    def _add_macro(self, *args):
+        self._macro_dialog(None)
+
+    def _edit_macro(self, macro):
+        self._macro_dialog(macro)
+
+    def _macro_dialog(self, macro=None):
+        title = "Edit Macro" if macro else "New Macro"
+        dlg = Gtk.Dialog(title=title, transient_for=self.parent_window, flags=0)
+        dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.OK)
+        dlg.set_default_size(440, 220)
+        dlg.set_default_response(Gtk.ResponseType.OK)
+
+        box = dlg.get_content_area()
+        grid = Gtk.Grid(column_spacing=12, row_spacing=10)
+        grid.set_margin_top(16); grid.set_margin_bottom(16)
+        grid.set_margin_start(16); grid.set_margin_end(16)
+
+        def lbl(t): return Gtk.Label(label=t, xalign=0)
+
+        grid.attach(lbl("Name"), 0, 0, 1, 1)
+        name_e = Gtk.Entry(text=macro["name"] if macro else "", placeholder_text="e.g. Check disk")
+        name_e.set_activates_default(True)
+        grid.attach(name_e, 1, 0, 2, 1)
+
+        grid.attach(lbl("Command"), 0, 1, 1, 1)
+        cmd_e = Gtk.Entry(text=macro["cmd"] if macro else "", placeholder_text="e.g. df -h")
+        cmd_e.set_activates_default(True)
+        grid.attach(cmd_e, 1, 1, 2, 1)
+
+        grid.attach(lbl("Group"), 0, 2, 1, 1)
+        grp_e = Gtk.Entry(text=macro.get("group", "General") if macro else "General")
+        grp_e.set_activates_default(True)
+        grid.attach(grp_e, 1, 2, 2, 1)
+
+        box.pack_start(grid, True, True, 0)
+        dlg.show_all()
+
+        if dlg.run() == Gtk.ResponseType.OK:
+            name = name_e.get_text().strip()
+            cmd  = cmd_e.get_text().strip()
+            grp  = grp_e.get_text().strip() or "General"
+            if name and cmd:
+                if macro:
+                    macro["name"] = name
+                    macro["cmd"]  = cmd
+                    macro["group"] = grp
+                else:
+                    self.macros.append({"name": name, "cmd": cmd, "group": grp})
+                self._save_macros()
+                self._refresh_list()
+        dlg.destroy()
+
+    def _delete_macro(self, macro):
+        dlg = Gtk.MessageDialog(
+            transient_for=self.parent_window,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.YES_NO,
+            text="Delete macro \"" + macro["name"] + "\"?"
+        )
+        if dlg.run() == Gtk.ResponseType.YES:
+            self.macros = [m for m in self.macros if m is not macro]
+            self._save_macros()
+            self._refresh_list()
+        dlg.destroy()
+
+
 class MainWindow(Gtk.Window):
     def __init__(self, app=None):
         super().__init__(title="NovaTerm")
         self.connect("destroy", Gtk.main_quit)
+        self.connect("key-press-event", self._on_window_key_press)
         self.set_default_size(1200, 700)
         self.session_data = load_sessions()
         # Pre-init labels so callbacks can't fire before _build_ui assigns them
@@ -2472,6 +2759,92 @@ class MainWindow(Gtk.Window):
         self._set_window_icon()
         self.pf_panel = PortForwardPanel(self)
         self._pf_window = None
+        self.macro_panel = MacroPanel(self)
+        self._macro_window = None
+
+    def _on_window_key_press(self, window, event):
+        """Global keyboard shortcuts for the main window."""
+        mods = event.state & Gtk.accelerator_get_default_mod_mask()
+        ctrl       = Gdk.ModifierType.CONTROL_MASK
+        ctrl_shift = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK
+        key = Gdk.keyval_name(event.keyval)
+
+        # ── Ctrl+Shift shortcuts ──────────────────────────────────
+        if mods == ctrl_shift:
+            KEY = key.upper()
+            # New SSH session
+            if KEY == "N":
+                self._new_session()
+                return True
+            # New local tab
+            elif KEY == "T":
+                self._new_local_tab()
+                return True
+            # Close current tab
+            elif KEY == "W":
+                tab = self._current_tab()
+                if tab:
+                    self._close_tab(tab)
+                return True
+            # Copy (also handled in terminal, but catch it here too)
+            elif KEY == "C":
+                self._copy()
+                return True
+            # Paste
+            elif KEY == "V":
+                self._paste()
+                return True
+            # Font bigger
+            elif KEY in ("PLUS", "EQUAL", "PARENRIGHT"):
+                self._font_larger()
+                return True
+            # Font smaller
+            elif KEY in ("MINUS", "UNDERSCORE"):
+                self._font_smaller()
+                return True
+            # Font reset
+            elif KEY == "0":
+                self._font_reset()
+                return True
+            # Toggle file browser
+            elif KEY == "B":
+                self._toggle_filebrowser()
+                return True
+            # Show macros
+            elif KEY == "M":
+                self._show_macro_panel()
+                return True
+
+        # ── Ctrl only shortcuts ───────────────────────────────────
+        elif mods == ctrl:
+            # Ctrl+Page Up — previous tab
+            if key == "Page_Up":
+                n = self.notebook.get_current_page()
+                if n > 0:
+                    self.notebook.set_current_page(n - 1)
+                else:
+                    self.notebook.set_current_page(self.notebook.get_n_pages() - 1)
+                return True
+            # Ctrl+Page Down — next tab
+            elif key == "Page_Down":
+                n = self.notebook.get_current_page()
+                total = self.notebook.get_n_pages()
+                self.notebook.set_current_page((n + 1) % total)
+                return True
+            # Ctrl+Tab — next tab (alternative)
+            elif key == "Tab":
+                n = self.notebook.get_current_page()
+                total = self.notebook.get_n_pages()
+                self.notebook.set_current_page((n + 1) % total)
+                return True
+            # Ctrl+1 through Ctrl+9 — jump to tab by number
+            elif key.isdigit() and key != "0":
+                idx = int(key) - 1
+                if idx < self.notebook.get_n_pages():
+                    self.notebook.set_current_page(idx)
+                    return True
+
+        return False
 
     def _set_window_icon(self):
         """Set the window icon from embedded base64 dog photo."""
@@ -2527,6 +2900,7 @@ class MainWindow(Gtk.Window):
             ("Tools", [
                 ("Toggle File Browser", self._toggle_filebrowser),
                 ("Port Forwards", self._show_port_forward_panel),
+                ("Macros", self._show_macro_panel),
                 (None, None),
                 ("Send Command to All Tabs", self._broadcast_command),
             ]),
@@ -2559,6 +2933,8 @@ class MainWindow(Gtk.Window):
             ("💻 New Session", self._new_session),
             ("🖥 Local Shell", self._new_local_tab),
             ("📂 File Browser", self._toggle_filebrowser),
+            ("⚡ Macros", self._show_macro_panel),
+            ("🔀 Port Forwards", self._show_port_forward_panel),
             ("➕ New Tab", self._new_local_tab),
         ]:
             btn = Gtk.Button(label=label)
@@ -2646,6 +3022,19 @@ class MainWindow(Gtk.Window):
         col.pack_start(name_r, True)
         col.add_attribute(icon_r, "text", 0)
         col.add_attribute(name_r, "text", 1)
+        # Colour the dot using a custom cell data func
+        def dot_colour_func(col, renderer, model, it, data):
+            sj = model.get_value(it, 2)
+            if sj:
+                try:
+                    s = json.loads(sj)
+                    colour = MainWindow.SESSION_COLOURS.get(
+                        s.get("colour", "none"), "#8b949e"
+                    )
+                    renderer.set_property("foreground", colour)
+                except Exception:
+                    pass
+        col.set_cell_data_func(icon_r, dot_colour_func)
         self.session_tree.append_column(col)
         self.session_tree.connect("row-activated", self._on_session_activated)
 
@@ -2668,15 +3057,29 @@ class MainWindow(Gtk.Window):
 
         return sidebar_box
 
+    # Colour hex map for session dots
+    SESSION_COLOURS = {
+        "none":   "#8b949e",
+        "blue":   "#58a6ff",
+        "green":  "#3fb950",
+        "orange": "#f0883e",
+        "red":    "#f85149",
+        "purple": "#bc8cff",
+        "yellow": "#d29922",
+        "cyan":   "#39c5cf",
+    }
+
     def _populate_session_tree(self):
         self.session_store.clear()
         for group in self.session_data.get("groups", []):
             parent = self.session_store.append(None, ["▾", group["name"], ""])
             for s in group.get("sessions", []):
+                colour = self.SESSION_COLOURS.get(s.get("colour", "none"), "#8b949e")
                 if s.get("type") == "rdp":
-                    icon = "🖥" if s.get("active") else "🖥"
+                    icon = "🖥"
                 else:
-                    icon = "⬤" if s.get("active") else "○"
+                    # Use coloured dot — store as markup hint in icon field
+                    icon = "⬤"
                 self.session_store.append(parent, [icon, s["name"], json.dumps(s)])
         self.session_tree.expand_all()
 
@@ -2997,6 +3400,19 @@ class MainWindow(Gtk.Window):
             tab.term.set_font(Pango.FontDescription("JetBrains Mono 13"))
 
 
+    def _show_macro_panel(self, *args):
+        if self._macro_window and self._macro_window.get_visible():
+            self._macro_window.present()
+            return
+        if not self._macro_window:
+            win = Gtk.Window(title="Macros — NovaTerm")
+            win.set_transient_for(self)
+            win.set_default_size(380, 520)
+            win.connect("delete-event", lambda w, e: w.hide() or True)
+            win.add(self.macro_panel)
+            self._macro_window = win
+        self._macro_window.show_all()
+
     def _show_port_forward_panel(self, *args):
         if self._pf_window and self._pf_window.get_visible():
             self._pf_window.present()
@@ -3035,7 +3451,7 @@ class MainWindow(Gtk.Window):
         dlg = Gtk.AboutDialog()
         dlg.set_transient_for(self)
         dlg.set_program_name("NovaTerm")
-        dlg.set_version("1.2.0")
+        dlg.set_version("1.3.1")
         dlg.set_comments("A MobaXterm replacement for Linux.\nBuilt with GTK3 + VTE + Paramiko.")
         dlg.set_license_type(Gtk.License.MIT_X11)
         dlg.set_website("https://github.com/yourusername/novaterm")
@@ -3160,7 +3576,7 @@ class SplashScreen(Gtk.Window):
 
         # Version
         ver = Gtk.Label()
-        ver.set_markup('<span font="9" color="#6e7681">v1.2.0  •  Built with GTK3 + VTE + Paramiko</span>')
+        ver.set_markup('<span font="9" color="#6e7681">v1.3.1  •  Built with GTK3 + VTE + Paramiko</span>')
         ver.set_margin_top(8)
         box.pack_start(ver, False, False, 0)
 
