@@ -1,64 +1,136 @@
-# NovaTerm 🖥️
+# NovaTerm
 
-A **MobaXterm replacement for Linux** — native GTK3 desktop app with real SSH terminal emulation, SFTP file browser, tabbed sessions, and session management.
+> A MobaXterm replacement for Linux — built with GTK3, VTE, and Paramiko.
+
+**Author:** Joseph Martin  
+**License:** MIT  
+**Platform:** Linux (all major distributions)
+
+---
+
+## Overview
+
+NovaTerm is a native Linux SSH and RDP terminal manager inspired by MobaXterm. It provides a full-featured tabbed terminal environment with an integrated SFTP file browser, session management, and RDP support — all in a clean dark-themed GTK3 desktop application.
+
+No Wine. No browser. No Electron. Pure native Linux GTK3.
+
+---
 
 ## Features
 
 | Feature | Description |
 |---|---|
-| **SSH Terminals** | Full xterm-256color terminal via VTE — works with vim, tmux, htop, etc. |
-| **Session Manager** | Save/edit/delete SSH sessions, organized in groups, persisted to `~/.config/novaterm/sessions.json` |
-| **SFTP File Browser** | Browse remote files, upload, and download — docked beside each terminal |
-| **Tabbed Interface** | Multiple sessions open simultaneously, tabs reorderable by drag |
-| **Local Terminals** | Open local bash/zsh shells in tabs too |
+| **SSH Sessions** | Full `xterm-256color` terminal via VTE — vim, tmux, htop all work |
+| **SFTP File Browser** | Browse, upload, download, rename, delete, chmod remote files |
+| **RDP Sessions** | Connect to Windows/Linux desktops via xfreerdp |
+| **Session Manager** | Save sessions in named groups, auto-persisted to disk |
+| **Tabbed Interface** | Multiple sessions simultaneously, tabs reorderable |
+| **Local Terminals** | Open local bash/zsh shells alongside SSH sessions |
+| **Progress Transfers** | Upload/download with live progress bar |
+| **Folder Download** | Recursively download folders and their contents over SFTP |
 | **Broadcast Command** | Send a command to all open tabs at once |
 | **Import / Export** | Share session lists as JSON |
 | **Dark Theme** | GitHub-dark colour scheme with JetBrains Mono font |
-| **Auth Methods** | SSH key (agent or file), password |
+| **Custom Icon** | Use any photo as the app icon and splash screen image |
 
-## Requirements
-
-| Package | Purpose |
-|---|---|
-| Python 3.8+ | Runtime |
-| PyGObject (python3-gi) | GTK bindings |
-| GTK 3.0 | UI toolkit |
-| VTE 2.91 | Terminal emulator widget |
-| Paramiko | SSH client + SFTP |
+---
 
 ## Installation
 
 ```bash
-# Clone or download, then:
+git clone https://github.com/majorpaynedof/Novaterm.git
+cd novaterm
 chmod +x install.sh
 ./install.sh
-
-# Run:
 novaterm
 ```
 
-The installer supports **Ubuntu/Debian, Fedora, Arch Linux, openSUSE** and auto-installs all dependencies.
+The installer automatically detects your Linux distribution and installs all required dependencies.
 
-## Manual Install (any distro)
+---
+
+## Distribution Support
+
+| Distribution | Package Manager | Status |
+|---|---|---|
+| Ubuntu 20.04+ | apt | ✅ Tested |
+| Debian 11+ | apt | ✅ Supported |
+| Zorin OS 16+ | apt | ✅ Tested |
+| Linux Mint 20+ | apt | ✅ Supported |
+| Pop!_OS | apt | ✅ Supported |
+| Elementary OS 6+ | apt | ✅ Supported |
+| Kali / Parrot | apt | ✅ Supported |
+| Fedora 36+ | dnf | ✅ Supported |
+| RHEL / Rocky / Alma 8+ | dnf | ✅ Supported |
+| Nobara | dnf | ✅ Supported |
+| Arch Linux | pacman | ✅ Supported |
+| Manjaro | pacman | ✅ Supported |
+| EndeavourOS | pacman | ✅ Supported |
+| Garuda | pacman | ✅ Supported |
+| openSUSE Leap/Tumbleweed | zypper | ✅ Supported |
+| Void Linux | xbps | ✅ Supported |
+| Alpine Linux | apk | ⚠️ Partial |
+| Raspberry Pi OS | apt | ✅ Supported |
+| Gentoo | emerge | ⚠️ Manual |
+
+**Minimum requirements:** GTK 3.20+, VTE 0.50+, Python 3.8+, X11 or XWayland
+
+---
+
+## Manual Dependency Install
 
 ```bash
-# Ubuntu / Debian
-sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-vte-2.91
-pip3 install --user paramiko
+# Ubuntu / Debian / Zorin / Mint
+sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 \
+    gir1.2-vte-2.91 gir1.2-gdkpixbuf-2.0 openssh-client freerdp2-x11
 
-# Fedora
-sudo dnf install python3-gobject gtk3 vte291
-pip3 install --user paramiko
+# Fedora / RHEL / Rocky
+sudo dnf install python3-gobject python3-cairo gtk3 vte291 \
+    gdk-pixbuf2 freerdp openssh-clients
 
-# Arch
-sudo pacman -S python-gobject gtk3 vte3
-pip3 install --user paramiko
+# Arch / Manjaro
+sudo pacman -S python-gobject python-cairo gtk3 vte3 gdk-pixbuf2 freerdp openssh
 
-# Run directly
-python3 novaterm.py
+# openSUSE
+sudo zypper install python3-gobject python3-gobject-cairo \
+    typelib-1_0-Gtk-3_0 typelib-1_0-Vte-2_91 freerdp openssh
+
+# All distros — Python packages
+pip3 install --user paramiko cryptography Pillow
 ```
 
-## Session File Format
+---
+
+## Usage
+
+### SSH Session
+1. Click **New Session** in the toolbar
+2. Enter hostname, port, username, choose SSH key or password auth
+3. Click **Save** — connects immediately and saves for next time
+
+### RDP Session
+1. Click **New Session**, toggle to **RDP**
+2. Enter hostname, username, password, resolution
+3. Click **Save**
+
+### SFTP File Browser
+- Opens automatically on the right side when SSH connects
+- Right-click for context menu: rename, delete, new folder, chmod, copy path
+- `F2` rename · `Del` delete · `F5` refresh · `Backspace` go up
+
+### Keyboard Shortcuts
+| Key | Action |
+|---|---|
+| `Ctrl+Shift+C` | Copy from terminal |
+| `Ctrl+Shift+V` | Paste to terminal |
+| `Ctrl+Page Up/Down` | Switch tabs |
+| `F2` | Rename (file browser) |
+| `Del` | Delete (file browser) |
+| `F5` | Refresh (file browser) |
+
+---
+
+## Session File
 
 Sessions are stored at `~/.config/novaterm/sessions.json`:
 
@@ -69,13 +141,13 @@ Sessions are stored at `~/.config/novaterm/sessions.json`:
       "name": "Production",
       "sessions": [
         {
-          "name": "web-prod-01",
+          "name": "web-server",
           "host": "192.168.1.10",
           "port": 22,
           "user": "ubuntu",
           "auth": "key",
           "key": "~/.ssh/id_rsa",
-          "group": "Production"
+          "type": "ssh"
         }
       ]
     }
@@ -83,15 +155,26 @@ Sessions are stored at `~/.config/novaterm/sessions.json`:
 }
 ```
 
-## Keyboard Shortcuts
+---
 
-| Shortcut | Action |
-|---|---|
-| `Ctrl+Shift+C` | Copy |
-| `Ctrl+Shift+V` | Paste |
-| `Ctrl+Shift+T` | New tab (via menu) |
-| `Ctrl+Page Up/Down` | Switch tabs |
-| `Ctrl++` / `Ctrl+-` | Font size (via menu) |
+## Custom Icon
+
+Place `icon.png` or `icon.jpg` in the same folder as `install.sh` before running the installer. The image will be resized to all standard icon sizes and embedded into the splash screen.
+
+---
+
+## Project Structure
+
+```
+novaterm/
+├── novaterm.py     # Main application (~1800 lines)
+├── install.sh      # Universal installer (all distros)
+├── icon.png        # App icon (optional — replace with your own)
+├── README.md       # Documentation
+└── LICENSE         # MIT License
+```
+
+---
 
 ## Comparison with MobaXterm
 
@@ -101,23 +184,44 @@ Sessions are stored at `~/.config/novaterm/sessions.json`:
 | SSH sessions | ✅ | ✅ |
 | SFTP browser | ✅ | ✅ |
 | Tabbed terminals | ✅ | ✅ |
-| Local terminal | ✅ | ✅ |
+| RDP support | ✅ | ✅ |
 | Session groups | ✅ | ✅ |
-| Open source | ❌ (proprietary) | ✅ MIT |
-| X11 forwarding | ✅ | Via SSH -X flag |
-| Macros/scripting | ✅ | Planned |
-| Port forwarding UI | ✅ | Planned |
+| Open source | ❌ Proprietary | ✅ MIT |
+| Cost | Freemium | Free |
+| Native Linux | ❌ Wine only | ✅ |
+
+---
 
 ## Roadmap
 
-- [ ] SSH port forwarding manager (local / remote / dynamic tunnels)  
-- [ ] X11 forwarding toggle  
-- [ ] Session colour coding / tagging  
-- [ ] Multi-pane split view  
-- [ ] Built-in text editor for remote files  
-- [ ] Session activity notifications  
-- [ ] MobaXterm session importer  
+- [ ] SSH port forwarding manager
+- [ ] Macro/snippet runner panel
+- [ ] Split terminal panes
+- [ ] Built-in remote file editor
+- [ ] MobaXterm session importer
+- [ ] Theme customisation
+
+---
+
+## Uninstall
+
+```bash
+rm -f ~/.local/bin/novaterm
+rm -rf ~/.local/share/novaterm
+rm -f ~/.local/share/applications/novaterm.desktop
+rm -rf ~/.local/share/icons/hicolor/*/apps/novaterm.*
+rm -rf ~/.config/novaterm   # also removes saved sessions
+```
+
+---
 
 ## License
 
-MIT
+MIT License — Copyright (c) 2026 Joseph Martin
+
+---
+
+## In Memoriam
+
+NovaTerm is named for **Nova** — CH PR Mikka Supernova, an Alaskan Klee Kai — a loyal companion who watched over every line of this project.
+Forever a good girl. Run free. 🐾
